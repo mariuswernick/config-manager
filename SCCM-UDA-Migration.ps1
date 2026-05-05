@@ -179,7 +179,6 @@ SELECT
     uda.UniqueUserName                  AS PrimaryUser,
     uda.RelationshipResourceID          AS RelationshipID,
     uda.CreationTime                    AS UDA_CreatedOn,
-    uda.IsActive                        AS UDA_IsActive,
     CASE
         WHEN uda.Sources & 16 > 0 THEN 'Fast Install'
         WHEN uda.Sources & 8  > 0 THEN 'Windows Logon'
@@ -191,7 +190,6 @@ SELECT
     uda.Sources                         AS UDA_SourceRaw
 FROM v_UserMachineRelationship uda
 JOIN v_R_System sys ON uda.MachineResourceID = sys.ResourceID
-WHERE uda.IsActive = 1
 ORDER BY sys.Name0, uda.UniqueUserName
 "@
 
