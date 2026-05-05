@@ -49,7 +49,7 @@
     .\SCCM-UDA-Migration.ps1 -Mode Report -NeuSiteCode "N01" -NeuSiteServer "SCCM-NEU" -ExportCsvPath "C:\Migration\UDA_Export.csv"
 
 .NOTES
-    Autor:   Marius (via Claude)
+    Autor:   Marius
     Version: 1.0
     Datum:   2026-03-10
 #>
