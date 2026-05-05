@@ -101,6 +101,8 @@ $ReportCsv    = Join-Path $LogPath "UDA_Migration_Report_${Timestamp}.csv"
 # Transcript starten
 Start-Transcript -Path $LogFile -Append
 
+try {
+
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  SCCM UDA Migration - Modus: $Mode" -ForegroundColor Cyan
 Write-Host "  Gestartet: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
@@ -178,13 +180,13 @@ SELECT
     uda.RelationshipResourceID          AS RelationshipID,
     uda.CreationTime                    AS UDA_CreatedOn,
     uda.IsActive                        AS UDA_IsActive,
-    CASE 
-        WHEN uda.Sources LIKE '%1%' THEN 'Software Catalog'
-        WHEN uda.Sources LIKE '%2%' THEN 'Administrator'
-        WHEN uda.Sources LIKE '%4%' THEN 'Usage Agent'
-        WHEN uda.Sources LIKE '%8%' THEN 'Windows Logon'
-        WHEN uda.Sources LIKE '%16%' THEN 'Fast Install'
-        ELSE uda.Sources
+    CASE
+        WHEN uda.Sources & 16 > 0 THEN 'Fast Install'
+        WHEN uda.Sources & 8  > 0 THEN 'Windows Logon'
+        WHEN uda.Sources & 4  > 0 THEN 'Usage Agent'
+        WHEN uda.Sources & 2  > 0 THEN 'Administrator'
+        WHEN uda.Sources & 1  > 0 THEN 'Software Catalog'
+        ELSE CAST(uda.Sources AS VARCHAR)
     END                                 AS UDA_Source,
     uda.Sources                         AS UDA_SourceRaw
 FROM v_UserMachineRelationship uda
@@ -204,7 +206,7 @@ ORDER BY sys.Name0, uda.UniqueUserName
         
         $Results = Invoke-Sqlcmd -ServerInstance $AltSqlServer -Database $AltDatabase -Query $Query -QueryTimeout 120
         
-        if ($Results.Count -eq 0) {
+        if (@($Results).Count -eq 0) {
             Write-Log "Keine aktiven UDAs gefunden!" -Level "WARN"
         } else {
             Write-Log "Gefunden: $($Results.Count) aktive UDA-Zuordnungen" -Level "OK"
@@ -286,81 +288,82 @@ if ($Mode -eq "Import") {
     
     # Verbindung zum neuen SCCM
     $OriginalLocation = Get-Location
-    Connect-NeuSCCM -SiteCode $NeuSiteCode -SiteServer $NeuSiteServer
-    
-    # Zaehler
-    $CountOK        = 0
-    $CountNotFound   = 0
-    $CountAlready    = 0
-    $CountError      = 0
-    $Total           = $Ausstehend.Count
-    $Current         = 0
-    
-    foreach ($Entry in $Ausstehend) {
-        $Current++
-        $Percent = [math]::Round(($Current / $Total) * 100, 1)
-        Write-Progress -Activity "UDA Import" -Status "$Current von $Total ($Percent%)" -PercentComplete $Percent
-        
-        try {
-            # Geraet im neuen SCCM suchen
-            $Device = Get-CMDevice -Name $Entry.DeviceName -Fast -ErrorAction SilentlyContinue
-            
-            if (-not $Device) {
-                # Geraet noch nicht im neuen SCCM
-                $Entry.ImportStatus   = "GeraetNichtGefunden"
-                $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-                $Entry.ImportMessage  = "Geraet noch nicht im neuen SCCM registriert"
-                $CountNotFound++
-                Write-Log "Geraet nicht gefunden: $($Entry.DeviceName) - wird beim naechsten Lauf erneut versucht" -Level "WARN"
-                continue
-            }
-            
-            # Pruefen ob UDA bereits gesetzt ist
-            $ExistingUDA = Get-CMUserDeviceAffinity -DeviceId $Device.ResourceID -ErrorAction SilentlyContinue |
-                           Where-Object { $_.UniqueUserName -eq $Entry.PrimaryUser }
-            
-            if ($ExistingUDA) {
+    try {
+        Connect-NeuSCCM -SiteCode $NeuSiteCode -SiteServer $NeuSiteServer
+
+        # Zaehler
+        $CountOK        = 0
+        $CountNotFound   = 0
+        $CountAlready    = 0
+        $CountError      = 0
+        $Total           = $Ausstehend.Count
+        $Current         = 0
+
+        foreach ($Entry in $Ausstehend) {
+            $Current++
+            $Percent = [math]::Round(($Current / $Total) * 100, 1)
+            Write-Progress -Activity "UDA Import" -Status "$Current von $Total ($Percent%)" -PercentComplete $Percent
+
+            try {
+                # Geraet im neuen SCCM suchen
+                $Device = Get-CMDevice -Name $Entry.DeviceName -Fast -ErrorAction SilentlyContinue
+
+                if (-not $Device) {
+                    # Geraet noch nicht im neuen SCCM
+                    $Entry.ImportStatus   = "GeraetNichtGefunden"
+                    $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                    $Entry.ImportMessage  = "Geraet noch nicht im neuen SCCM registriert"
+                    $CountNotFound++
+                    Write-Log "Geraet nicht gefunden: $($Entry.DeviceName) - wird beim naechsten Lauf erneut versucht" -Level "WARN"
+                    continue
+                }
+
+                # Pruefen ob UDA bereits gesetzt ist
+                $ExistingUDA = Get-CMUserDeviceAffinity -DeviceId $Device.ResourceID -ErrorAction SilentlyContinue |
+                               Where-Object { $_.UniqueUserName -eq $Entry.PrimaryUser }
+
+                if ($ExistingUDA) {
+                    $Entry.ImportStatus   = "OK"
+                    $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                    $Entry.ImportMessage  = "UDA war bereits vorhanden"
+                    $CountAlready++
+                    Write-Log "Bereits vorhanden: $($Entry.DeviceName) -> $($Entry.PrimaryUser)" -Level "INFO"
+                    continue
+                }
+
+                # UDA setzen
+                Add-CMUserAffinityToDevice -DeviceId $Device.ResourceID -UserName $Entry.PrimaryUser
+
                 $Entry.ImportStatus   = "OK"
                 $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-                $Entry.ImportMessage  = "UDA war bereits vorhanden"
-                $CountAlready++
-                Write-Log "Bereits vorhanden: $($Entry.DeviceName) -> $($Entry.PrimaryUser)" -Level "INFO"
-                continue
+                $Entry.ImportMessage  = "Erfolgreich gesetzt"
+                $CountOK++
+                Write-Log "OK: $($Entry.DeviceName) -> $($Entry.PrimaryUser)" -Level "OK"
+
+            } catch {
+                $Entry.ImportStatus   = "Fehler"
+                $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                $Entry.ImportMessage  = $_.Exception.Message
+                $CountError++
+                Write-Log "FEHLER bei $($Entry.DeviceName): $_" -Level "ERROR"
             }
-            
-            # UDA setzen
-            Add-CMUserAffinityToDevice -DeviceId $Device.ResourceID -UserName $Entry.PrimaryUser
-            
-            $Entry.ImportStatus   = "OK"
-            $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-            $Entry.ImportMessage  = "Erfolgreich gesetzt"
-            $CountOK++
-            Write-Log "OK: $($Entry.DeviceName) -> $($Entry.PrimaryUser)" -Level "OK"
-            
-        } catch {
-            $Entry.ImportStatus   = "Fehler"
-            $Entry.ImportTimestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-            $Entry.ImportMessage  = $_.Exception.Message
-            $CountError++
-            Write-Log "FEHLER bei $($Entry.DeviceName): $_" -Level "ERROR"
         }
+
+        Write-Progress -Activity "UDA Import" -Completed
+
+        # CSV aktualisieren (Status zurueckschreiben)
+        $UDAData | Export-Csv -Path $ExportCsvPath -NoTypeInformation -Encoding UTF8 -Delimiter ";" -Force
+        Write-Log "CSV aktualisiert: $ExportCsvPath" -Level "OK"
+
+        # Bericht erstellen - nur nicht-OK Eintraege
+        $Pending = $UDAData | Where-Object { $_.ImportStatus -ne "OK" }
+        if ($Pending.Count -gt 0) {
+            $Pending | Export-Csv -Path $ReportCsv -NoTypeInformation -Encoding UTF8 -Delimiter ";"
+            Write-Log "Ausstehende UDAs exportiert: $ReportCsv" -Level "INFO"
+        }
+    } finally {
+        Set-Location $OriginalLocation
     }
-    
-    Write-Progress -Activity "UDA Import" -Completed
-    
-    # CSV aktualisieren (Status zurueckschreiben)
-    $UDAData | Export-Csv -Path $ExportCsvPath -NoTypeInformation -Encoding UTF8 -Delimiter ";" -Force
-    Write-Log "CSV aktualisiert: $ExportCsvPath" -Level "OK"
-    
-    # Bericht erstellen - nur nicht-OK Eintraege
-    $Pending = $UDAData | Where-Object { $_.ImportStatus -ne "OK" }
-    if ($Pending.Count -gt 0) {
-        $Pending | Export-Csv -Path $ReportCsv -NoTypeInformation -Encoding UTF8 -Delimiter ";"
-        Write-Log "Ausstehende UDAs exportiert: $ReportCsv" -Level "INFO"
-    }
-    
-    # Zurueck zum urspruenglichen Pfad
-    Set-Location $OriginalLocation
     
     # Zusammenfassung
     Write-Host ""
@@ -432,20 +435,22 @@ if ($Mode -eq "Report") {
         Write-Host "  Pruefe aktuelle Verfuegbarkeit im neuen SCCM..." -ForegroundColor Gray
         
         $OriginalLocation = Get-Location
-        Connect-NeuSCCM -SiteCode $NeuSiteCode -SiteServer $NeuSiteServer
-        
-        $Pending = $UDAData | Where-Object { $_.ImportStatus -ne "OK" }
-        $NowAvailable = 0
-        
-        foreach ($Entry in $Pending) {
-            $Device = Get-CMDevice -Name $Entry.DeviceName -Fast -ErrorAction SilentlyContinue
-            if ($Device) {
-                $NowAvailable++
-                Write-Host "  BEREIT: $($Entry.DeviceName) -> $($Entry.PrimaryUser)" -ForegroundColor Green
+        try {
+            Connect-NeuSCCM -SiteCode $NeuSiteCode -SiteServer $NeuSiteServer
+
+            $Pending = $UDAData | Where-Object { $_.ImportStatus -ne "OK" }
+            $NowAvailable = 0
+
+            foreach ($Entry in $Pending) {
+                $Device = Get-CMDevice -Name $Entry.DeviceName -Fast -ErrorAction SilentlyContinue
+                if ($Device) {
+                    $NowAvailable++
+                    Write-Host "  BEREIT: $($Entry.DeviceName) -> $($Entry.PrimaryUser)" -ForegroundColor Green
+                }
             }
+        } finally {
+            Set-Location $OriginalLocation
         }
-        
-        Set-Location $OriginalLocation
         
         if ($NowAvailable -gt 0) {
             Write-Host ""
@@ -463,5 +468,7 @@ if ($Mode -eq "Report") {
 #       AUFRAUMEN
 #endregion =========================================================
 
-Stop-Transcript
-Write-Host "Log gespeichert: $LogFile" -ForegroundColor Gray
+} finally {
+    Stop-Transcript
+    Write-Host "Log gespeichert: $LogFile" -ForegroundColor Gray
+}
