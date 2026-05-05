@@ -178,16 +178,7 @@ SELECT
     sys.Name0                           AS DeviceName,
     uda.UniqueUserName                  AS PrimaryUser,
     uda.RelationshipResourceID          AS RelationshipID,
-    uda.CreationTime                    AS UDA_CreatedOn,
-    CASE
-        WHEN uda.Sources & 16 > 0 THEN 'Fast Install'
-        WHEN uda.Sources & 8  > 0 THEN 'Windows Logon'
-        WHEN uda.Sources & 4  > 0 THEN 'Usage Agent'
-        WHEN uda.Sources & 2  > 0 THEN 'Administrator'
-        WHEN uda.Sources & 1  > 0 THEN 'Software Catalog'
-        ELSE CAST(uda.Sources AS VARCHAR)
-    END                                 AS UDA_Source,
-    uda.Sources                         AS UDA_SourceRaw
+    uda.CreationTime                    AS UDA_CreatedOn
 FROM v_UserMachineRelationship uda
 JOIN v_R_System sys ON uda.MachineResourceID = sys.ResourceID
 ORDER BY sys.Name0, uda.UniqueUserName
@@ -213,8 +204,6 @@ ORDER BY sys.Name0, uda.UniqueUserName
             $ExportData = $Results | Select-Object `
                 DeviceName, `
                 PrimaryUser, `
-                UDA_Source, `
-                UDA_SourceRaw, `
                 UDA_CreatedOn, `
                 @{Name = "ImportStatus";    Expression = { "Ausstehend" }}, `
                 @{Name = "ImportTimestamp";  Expression = { "" }}, `
@@ -229,11 +218,6 @@ ORDER BY sys.Name0, uda.UniqueUserName
             Write-Host "  EXPORT ZUSAMMENFASSUNG" -ForegroundColor Cyan
             Write-Host "============================================================" -ForegroundColor Cyan
             Write-Host ""
-            
-            $BySource = $ExportData | Group-Object UDA_Source
-            foreach ($grp in $BySource) {
-                Write-Host "  $($grp.Name): $($grp.Count) Zuordnungen" -ForegroundColor White
-            }
             
             $UniqueDevices = ($ExportData | Select-Object -ExpandProperty DeviceName -Unique).Count
             $UniqueUsers   = ($ExportData | Select-Object -ExpandProperty PrimaryUser -Unique).Count
